@@ -1,0 +1,26 @@
+# Build outputs
+*.exe
+*.dll
+*.obj
+*.o
+*.pdb
+publish/
+
+# User config
+config.txt
+
+# Old/unused files
+main.c
+mainof.c
+min.c
+Program.cs
+RamLimiter.csproj
+
+# IDE
+.vs/
+*.suo
+*.user
+
+# OS
+Thumbs.db
+.DS_Store
