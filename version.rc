@@ -1,6 +1,6 @@
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION 1,0,0,0
-PRODUCTVERSION 1,0,0,0
+FILEVERSION 1,0,1,0
+PRODUCTVERSION 1,0,1,0
 FILEFLAGSMASK 0x3f
 FILEFLAGS 0
 FILEOS 0x40004
@@ -12,12 +12,12 @@ FILETYPE 0x1
     {
       VALUE "CompanyName", "RamLimiter"
       VALUE "FileDescription", "RAM Limiter Pro - Memory Optimizer"
-      VALUE "FileVersion", "1.0.0.0"
+      VALUE "FileVersion", "1.0.1.0"
       VALUE "InternalName", "RamLimiter"
       VALUE "OriginalFilename", "RamLimiter.exe"
       VALUE "ProductName", "RAM Limiter Pro"
-      VALUE "ProductVersion", "1.0.0.0"
-      VALUE "LegalCopyright", "Copyright 2024"
+      VALUE "ProductVersion", "1.0.1.0"
+      VALUE "LegalCopyright", "Copyright 2026"
     }
   }
   BLOCK "VarFileInfo"
