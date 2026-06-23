@@ -44,10 +44,13 @@
 #define ID_STATIC_MEMACTIVE 501
 #define ID_CHECK_STARTUP 600
 #define ID_CHECK_STARTMIN 601
+#define ID_EDIT_PROCMIN 602
+#define ID_BTN_SAVEPROC 603
 #define ID_TRAYICON 1
 
 typedef struct {
     WCHAR name[MAX_NAME_LEN];
+    DWORD minMemoryMb;  // 0 = usar global
 } PROCESS_ENTRY;
 
 static PROCESS_ENTRY g_procs[MAX_PROCESSES];
@@ -69,6 +72,7 @@ static HWND g_hwndList, g_hwndEditProcess, g_hwndBtnAdd, g_hwndBtnRemove;
 static HWND g_hwndStatus, g_hwndStats, g_hwndFreed, g_hwndTrimmed, g_hwndErrors;
 static HWND g_hwndMemTotal, g_hwndInterval, g_hwndMinMem;
 static HWND g_hwndChkStartup, g_hwndChkStartMin;
+static HWND g_hwndEditProcMin, g_hwndBtnSaveProc;
 
 static WCHAR g_configPath[MAX_PATH];
 static ULONGLONG g_configLastMod = 0;
@@ -133,7 +137,10 @@ static void config_save(void) {
     for (int i = 0; i < g_procCount; i++) {
         char nameA[MAX_NAME_LEN];
         WideCharToMultiByte(CP_UTF8, 0, g_procs[i].name, -1, nameA, MAX_NAME_LEN, NULL, NULL);
-        fprintf(f, "%s\n", nameA);
+        if (g_procs[i].minMemoryMb > 0)
+            fprintf(f, "%s=%u\n", nameA, g_procs[i].minMemoryMb);
+        else
+            fprintf(f, "%s\n", nameA);
     }
     LeaveCriticalSection(&g_cs);
 
@@ -204,7 +211,14 @@ static void config_load(void) {
         if (ext) *ext = '\0';
 
         if (g_procCount < MAX_PROCESSES && strlen(p) > 0) {
+            DWORD perProcMb = 0;
+            char *eq = strchr(p, '=');
+            if (eq) {
+                perProcMb = atoi(eq + 1);
+                *eq = '\0';
+            }
             MultiByteToWideChar(CP_UTF8, 0, p, -1, g_procs[g_procCount].name, MAX_NAME_LEN);
+            g_procs[g_procCount].minMemoryMb = perProcMb;
             g_procCount++;
         }
     }
@@ -268,8 +282,12 @@ static void trim_all(void) {
     EnterCriticalSection(&g_cs);
     int n = g_procCount;
     WCHAR names[MAX_PROCESSES][MAX_NAME_LEN];
-    for (int i = 0; i < n; i++) wcscpy_s(names[i], MAX_NAME_LEN, g_procs[i].name);
-    DWORD minMb = g_minMemoryMb;
+    DWORD perProcMb[MAX_PROCESSES];
+    for (int i = 0; i < n; i++) {
+        wcscpy_s(names[i], MAX_NAME_LEN, g_procs[i].name);
+        perProcMb[i] = g_procs[i].minMemoryMb;
+    }
+    DWORD globalMinMb = g_minMemoryMb;
     LeaveCriticalSection(&g_cs);
 
     for (int i = 0; i < n; i++) {
@@ -278,7 +296,8 @@ static void trim_all(void) {
         SIZE_T ws = 0;
         DWORD pid = pid_of_process(names[i], &ws);
         if (!pid) continue;
-        if (minMb > 0 && ws < (SIZE_T)minMb * 1048576) continue;
+        DWORD effectiveMinMb = (perProcMb[i] > 0) ? perProcMb[i] : globalMinMb;
+        if (effectiveMinMb > 0 && ws < (SIZE_T)effectiveMinMb * 1048576) continue;
         
         LONGLONG freed = 0;
         if (trim_pid(pid, ws, &freed)) {
@@ -321,7 +340,12 @@ static void update_listbox(void) {
     SendMessage(g_hwndList, LB_RESETCONTENT, 0, 0);
     EnterCriticalSection(&g_cs);
     for (int i = 0; i < g_procCount; i++) {
-        SendMessage(g_hwndList, LB_ADDSTRING, 0, (LPARAM)g_procs[i].name);
+        WCHAR entry[280];
+        if (g_procs[i].minMemoryMb > 0)
+            swprintf_s(entry, ARRAYSIZE(entry), L"%s (%u MB)", g_procs[i].name, g_procs[i].minMemoryMb);
+        else
+            wcscpy_s(entry, ARRAYSIZE(entry), g_procs[i].name);
+        SendMessage(g_hwndList, LB_ADDSTRING, 0, (LPARAM)entry);
     }
     LeaveCriticalSection(&g_cs);
 }
@@ -373,53 +397,61 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_CREATE: {
             HFONT hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
 
-            CreateWindowEx(0, L"STATIC", L"RAM Limiter Pro", WS_CHILD | WS_VISIBLE | SS_CENTER, 180, 10, 160, 25, hwnd, NULL, GetModuleHandle(NULL), NULL);
-            CreateWindowEx(0, L"STATIC", L"Processos:", WS_CHILD | WS_VISIBLE, 10, 40, 200, 20, hwnd, NULL, GetModuleHandle(NULL), NULL);
+            CreateWindowEx(0, L"STATIC", L"RAM Limiter Pro", WS_CHILD | WS_VISIBLE | SS_CENTER, 10, 5, 530, 25, hwnd, NULL, GetModuleHandle(NULL), NULL);
 
-            g_hwndList = CreateWindowEx(WS_EX_CLIENTEDGE, L"LISTBOX", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL | LBS_NOTIFY, 10, 60, 200, 200, hwnd, (HMENU)ID_LISTBOX, GetModuleHandle(NULL), NULL);
+            CreateWindowEx(0, L"STATIC", L"Processos:", WS_CHILD | WS_VISIBLE, 10, 35, 200, 20, hwnd, NULL, GetModuleHandle(NULL), NULL);
+            g_hwndList = CreateWindowEx(WS_EX_CLIENTEDGE, L"LISTBOX", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL | LBS_NOTIFY, 10, 55, 200, 180, hwnd, (HMENU)ID_LISTBOX, GetModuleHandle(NULL), NULL);
             SendMessage(g_hwndList, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-            g_hwndEditProcess = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER, 10, 265, 200, 22, hwnd, (HMENU)ID_EDIT_PROCESS, GetModuleHandle(NULL), NULL);
+            g_hwndEditProcess = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER, 10, 240, 200, 22, hwnd, (HMENU)ID_EDIT_PROCESS, GetModuleHandle(NULL), NULL);
             SendMessage(g_hwndEditProcess, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-            g_hwndBtnAdd = CreateWindowEx(0, L"BUTTON", L"+ Add", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 10, 290, 65, 24, hwnd, (HMENU)ID_BTN_ADD, GetModuleHandle(NULL), NULL);
+            g_hwndBtnAdd = CreateWindowEx(0, L"BUTTON", L"+ Add", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 10, 268, 65, 24, hwnd, (HMENU)ID_BTN_ADD, GetModuleHandle(NULL), NULL);
             SendMessage(g_hwndBtnAdd, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-            g_hwndBtnRemove = CreateWindowEx(0, L"BUTTON", L"- Remove", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 80, 290, 65, 24, hwnd, (HMENU)ID_BTN_REMOVE, GetModuleHandle(NULL), NULL);
+            g_hwndBtnRemove = CreateWindowEx(0, L"BUTTON", L"- Remove", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 80, 268, 65, 24, hwnd, (HMENU)ID_BTN_REMOVE, GetModuleHandle(NULL), NULL);
             SendMessage(g_hwndBtnRemove, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-            CreateWindowEx(0, L"BUTTON", L"Refresh", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 150, 290, 60, 24, hwnd, (HMENU)ID_BTN_REFRESH, GetModuleHandle(NULL), NULL);
-            CreateWindowEx(0, L"STATIC", L"Intervalo:", WS_CHILD | WS_VISIBLE, 230, 40, 90, 20, hwnd, NULL, GetModuleHandle(NULL), NULL);
+            CreateWindowEx(0, L"BUTTON", L"Refresh", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 150, 268, 60, 24, hwnd, (HMENU)ID_BTN_REFRESH, GetModuleHandle(NULL), NULL);
 
-            g_hwndInterval = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", L"5000", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER, 320, 38, 70, 22, hwnd, (HMENU)ID_EDIT_INTERVAL, GetModuleHandle(NULL), NULL);
+            CreateWindowEx(0, L"STATIC", L"Min MB Proc:", WS_CHILD | WS_VISIBLE, 10, 300, 80, 20, hwnd, NULL, GetModuleHandle(NULL), NULL);
+            g_hwndEditProcMin = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", L"0", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER, 95, 298, 55, 22, hwnd, (HMENU)ID_EDIT_PROCMIN, GetModuleHandle(NULL), NULL);
+            SendMessage(g_hwndEditProcMin, WM_SETFONT, (WPARAM)hFont, TRUE);
+            g_hwndBtnSaveProc = CreateWindowEx(0, L"BUTTON", L"Salvar Proc", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 155, 297, 80, 24, hwnd, (HMENU)ID_BTN_SAVEPROC, GetModuleHandle(NULL), NULL);
+            SendMessage(g_hwndBtnSaveProc, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+            CreateWindowEx(0, L"STATIC", L"Configuracoes:", WS_CHILD | WS_VISIBLE, 230, 35, 200, 20, hwnd, NULL, GetModuleHandle(NULL), NULL);
+
+            CreateWindowEx(0, L"STATIC", L"Intervalo:", WS_CHILD | WS_VISIBLE, 230, 60, 70, 20, hwnd, NULL, GetModuleHandle(NULL), NULL);
+            g_hwndInterval = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", L"5000", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER, 305, 58, 70, 22, hwnd, (HMENU)ID_EDIT_INTERVAL, GetModuleHandle(NULL), NULL);
             SendMessage(g_hwndInterval, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-            CreateWindowEx(0, L"STATIC", L"Min MB:", WS_CHILD | WS_VISIBLE, 400, 40, 85, 20, hwnd, NULL, GetModuleHandle(NULL), NULL);
-            g_hwndMinMem = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", L"0", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER, 460, 38, 55, 22, hwnd, (HMENU)ID_EDIT_MINMEM, GetModuleHandle(NULL), NULL);
+            CreateWindowEx(0, L"STATIC", L"Min MB:", WS_CHILD | WS_VISIBLE, 385, 60, 60, 20, hwnd, NULL, GetModuleHandle(NULL), NULL);
+            g_hwndMinMem = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", L"0", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER, 450, 58, 55, 22, hwnd, (HMENU)ID_EDIT_MINMEM, GetModuleHandle(NULL), NULL);
             SendMessage(g_hwndMinMem, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-            CreateWindowEx(0, L"BUTTON", L"Salvar", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 230, 65, 80, 24, hwnd, (HMENU)ID_BTN_SAVE, GetModuleHandle(NULL), NULL);
+            CreateWindowEx(0, L"BUTTON", L"Salvar Config", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 230, 88, 100, 24, hwnd, (HMENU)ID_BTN_SAVE, GetModuleHandle(NULL), NULL);
 
-            g_hwndChkStartup = CreateWindowEx(0, L"BUTTON", L"Iniciar com Windows", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 315, 68, 150, 20, hwnd, (HMENU)ID_CHECK_STARTUP, GetModuleHandle(NULL), NULL);
+            g_hwndChkStartup = CreateWindowEx(0, L"BUTTON", L"Iniciar com Windows", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 335, 91, 140, 20, hwnd, (HMENU)ID_CHECK_STARTUP, GetModuleHandle(NULL), NULL);
             SendMessage(g_hwndChkStartup, WM_SETFONT, (WPARAM)hFont, TRUE);
             g_startupEnabled = startup_check();
             SendMessage(g_hwndChkStartup, BM_SETCHECK, g_startupEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
 
-            g_hwndChkStartMin = CreateWindowEx(0, L"BUTTON", L"Iniciar minimizado", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 315, 92, 150, 20, hwnd, (HMENU)ID_CHECK_STARTMIN, GetModuleHandle(NULL), NULL);
+            g_hwndChkStartMin = CreateWindowEx(0, L"BUTTON", L"Iniciar minimizado", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 230, 115, 140, 20, hwnd, (HMENU)ID_CHECK_STARTMIN, GetModuleHandle(NULL), NULL);
             SendMessage(g_hwndChkStartMin, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessage(g_hwndChkStartMin, BM_SETCHECK, g_startMinimized ? BST_CHECKED : BST_UNCHECKED, 0);
 
-            CreateWindowEx(0, L"STATIC", L"Status:", WS_CHILD | WS_VISIBLE, 230, 120, 285, 20, hwnd, NULL, GetModuleHandle(NULL), NULL);
-            g_hwndStatus = CreateWindowEx(0, L"STATIC", L"Ativos: 0 / 0", WS_CHILD | WS_VISIBLE, 230, 140, 140, 20, hwnd, (HMENU)ID_STATIC_STATUS, GetModuleHandle(NULL), NULL);
-            g_hwndMemTotal = CreateWindowEx(0, L"STATIC", L"Memoria: 0 B", WS_CHILD | WS_VISIBLE, 375, 140, 140, 20, hwnd, (HMENU)ID_STATIC_MEMTOTAL, GetModuleHandle(NULL), NULL);
+            CreateWindowEx(0, L"STATIC", L"Status:", WS_CHILD | WS_VISIBLE, 230, 145, 300, 20, hwnd, NULL, GetModuleHandle(NULL), NULL);
+            g_hwndStatus = CreateWindowEx(0, L"STATIC", L"Ativos: 0 / 0", WS_CHILD | WS_VISIBLE, 230, 165, 140, 20, hwnd, (HMENU)ID_STATIC_STATUS, GetModuleHandle(NULL), NULL);
+            g_hwndMemTotal = CreateWindowEx(0, L"STATIC", L"Memoria: 0 B", WS_CHILD | WS_VISIBLE, 375, 165, 140, 20, hwnd, (HMENU)ID_STATIC_MEMTOTAL, GetModuleHandle(NULL), NULL);
 
-            CreateWindowEx(0, L"STATIC", L"Estatisticas:", WS_CHILD | WS_VISIBLE, 230, 170, 285, 20, hwnd, NULL, GetModuleHandle(NULL), NULL);
-            g_hwndTrimmed = CreateWindowEx(0, L"STATIC", L"Trimados: 0", WS_CHILD | WS_VISIBLE, 230, 190, 90, 20, hwnd, (HMENU)ID_STATIC_TRIMMED, GetModuleHandle(NULL), NULL);
-            g_hwndErrors = CreateWindowEx(0, L"STATIC", L"Erros: 0", WS_CHILD | WS_VISIBLE, 320, 190, 70, 20, hwnd, (HMENU)ID_STATIC_ERRORS, GetModuleHandle(NULL), NULL);
-            g_hwndFreed = CreateWindowEx(0, L"STATIC", L"Liberado: 0 B", WS_CHILD | WS_VISIBLE, 230, 210, 140, 20, hwnd, (HMENU)ID_STATIC_FREED, GetModuleHandle(NULL), NULL);
-            g_hwndStats = CreateWindowEx(0, L"STATIC", L"Ultimo trim: Nunca", WS_CHILD | WS_VISIBLE, 375, 210, 140, 20, hwnd, (HMENU)ID_STATIC_STATS, GetModuleHandle(NULL), NULL);
+            CreateWindowEx(0, L"STATIC", L"Estatisticas:", WS_CHILD | WS_VISIBLE, 230, 195, 300, 20, hwnd, NULL, GetModuleHandle(NULL), NULL);
+            g_hwndTrimmed = CreateWindowEx(0, L"STATIC", L"Trimados: 0", WS_CHILD | WS_VISIBLE, 230, 215, 90, 20, hwnd, (HMENU)ID_STATIC_TRIMMED, GetModuleHandle(NULL), NULL);
+            g_hwndErrors = CreateWindowEx(0, L"STATIC", L"Erros: 0", WS_CHILD | WS_VISIBLE, 325, 215, 70, 20, hwnd, (HMENU)ID_STATIC_ERRORS, GetModuleHandle(NULL), NULL);
+            g_hwndFreed = CreateWindowEx(0, L"STATIC", L"Liberado: 0 B", WS_CHILD | WS_VISIBLE, 230, 235, 140, 20, hwnd, (HMENU)ID_STATIC_FREED, GetModuleHandle(NULL), NULL);
+            g_hwndStats = CreateWindowEx(0, L"STATIC", L"Ultimo trim: Nunca", WS_CHILD | WS_VISIBLE, 375, 235, 155, 20, hwnd, (HMENU)ID_STATIC_STATS, GetModuleHandle(NULL), NULL);
 
-            CreateWindowEx(0, L"STATIC", L"Requer privilegios de Administrador", WS_CHILD | WS_VISIBLE | SS_CENTER, 10, 340, 500, 20, hwnd, NULL, GetModuleHandle(NULL), NULL);
+            CreateWindowEx(0, L"STATIC", L"Requer privilegios de Administrador", WS_CHILD | WS_VISIBLE | SS_CENTER, 10, 340, 530, 20, hwnd, NULL, GetModuleHandle(NULL), NULL);
 
             update_listbox();
             SetTimer(hwnd, ID_TIMER_UPDATE, 1000, NULL);
@@ -438,6 +470,32 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 SetEvent(g_hShutdownEvent);
                 Shell_NotifyIcon(NIM_DELETE, &g_nid);
                 PostMessage(hwnd, WM_QUIT, 0, 0);
+            }
+            else if (LOWORD(wp) == ID_LISTBOX && HIWORD(wp) == LBN_SELCHANGE) {
+                int sel = SendMessage(g_hwndList, LB_GETCURSEL, 0, 0);
+                if (sel != LB_ERR) {
+                    EnterCriticalSection(&g_cs);
+                    if (sel < g_procCount) {
+                        WCHAR buf[32];
+                        swprintf_s(buf, ARRAYSIZE(buf), L"%u", g_procs[sel].minMemoryMb);
+                        SetWindowText(g_hwndEditProcMin, buf);
+                    }
+                    LeaveCriticalSection(&g_cs);
+                }
+            }
+            else if (wp == ID_BTN_SAVEPROC) {
+                int sel = SendMessage(g_hwndList, LB_GETCURSEL, 0, 0);
+                if (sel != LB_ERR) {
+                    WCHAR buf[32];
+                    GetWindowText(g_hwndEditProcMin, buf, 32);
+                    DWORD newMinMb = _wtoi(buf);
+                    EnterCriticalSection(&g_cs);
+                    if (sel < g_procCount) g_procs[sel].minMemoryMb = newMinMb;
+                    LeaveCriticalSection(&g_cs);
+                    config_save();
+                    update_listbox();
+                    SendMessage(g_hwndList, LB_SETCURSEL, sel, 0);
+                }
             }
             else if (wp == ID_BTN_ADD) {
                 WCHAR name[MAX_NAME_LEN];
@@ -564,7 +622,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow) {
     wc.lpszClassName = L"RamLimiterApp";
     RegisterClassEx(&wc);
 
-    HWND hwnd = CreateWindowEx(0, L"RamLimiterApp", L"RAM Limiter Pro", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 560, 400, NULL, NULL, hInst, NULL);
+    HWND hwnd = CreateWindowEx(0, L"RamLimiterApp", L"RAM Limiter Pro", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 560, 380, NULL, NULL, hInst, NULL);
     g_mainHwnd = hwnd;
     if (g_startMinimized) ShowWindow(hwnd, SW_HIDE);
     else ShowWindow(hwnd, nShow);

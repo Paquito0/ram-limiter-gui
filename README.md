@@ -39,17 +39,31 @@ $gcc = "C:\msys64\mingw64\bin\gcc.exe"
 
 ```
 interval=5000        # ms entre trims (1000-600000)
-min_memory=0         # MB minimo para trimar (0 = sempre trima)
+min_memory=0         # MB minimo global para trimar (0 = sempre trima)
 start_minimized=1    # iniciar minimizado no tray (0/1)
 
 # processos abaixo, um por linha, sem .exe
-discord
-chrome
-steam
-spotify
+# Formato: processo OU processo=limite_MB
+discord=50           # trima discord so se passar de 50 MB
+chrome               # trima chrome sempre (usa min_memory global)
+steam=25
+spotify=30
+steamwebhelper=40
 ```
 
 Linhas comecando com `#` sao ignoradas.
+
+### Min memory por processo
+
+Cada processo pode ter seu proprio limite de memoria:
+
+```
+discord=50           # trima so se > 50 MB
+chrome               # trima sempre (usa global)
+steam=25             # trima so se > 25 MB
+```
+
+Se um processo nao tiver `=`, usa o `min_memory` global.
 
 ## Arquitetura
 
@@ -60,7 +74,6 @@ Linhas comecando com `#` sao ignoradas.
 | `version.res` | Build artifact do version.rc (gerado) |
 | `config.txt` | Configuracao (gerado na 1a execucao) |
 | `LICENSE` | Licenca MIT |
-| `AGENTS.md` | Instrucoes para o opencode (IA) |
 
 ## Fluxo principal
 
